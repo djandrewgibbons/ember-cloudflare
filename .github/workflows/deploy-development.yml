@@ -1,0 +1,95 @@
+name: Deploy Development
+
+# Development exists only for pull requests: it runs the latest PR whose checks passed (two open PRs: last one wins), or a manually
+# dispatched branch, as Platform's does: the Worker ember-development with the R2 bucket
+# ember-development, apart from production's people, messages and files. workflow_run always runs
+# this file as it is on the default branch, irc.dxnd.ai, so changes here take effect once merged. Create the bucket first
+# (`pnpm exec wrangler r2 bucket create ember-development`) unless the token may make buckets. The
+# first deploy takes its setup token from an EMBER_DEV_SETUP_TOKEN secret (`openssl rand -hex 32`).
+on:
+  workflow_run:
+    workflows: ["PR Checks"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-development
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # A PR run already passed PR Checks; a manual run is checked here.
+  verify:
+    name: Verify
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/verify.yml
+
+  deploy:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: verify
+    if: |
+      !failure() && !cancelled() && (
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
+    env:
+      WORKER_NAME: ember-development
+      BUCKET_NAME: ember-development
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - name: Resolve commit
+        id: ref
+        env:
+          SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
+        run: echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+      # Pinned to commits, as Ember's own deploy workflows are, because this job holds the Cloudflare token.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ steps.ref.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Deploy
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EMBER_SETUP_TOKEN: ${{ secrets.EMBER_DEV_SETUP_TOKEN }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
+          SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          # wrangler.jsonc with development's bucket in place of production's, beside it, since its paths are the root's.
+          sed "s/\"bucket_name\": \"ember\"/\"bucket_name\": \"$BUCKET_NAME\"/" wrangler.jsonc > wrangler.development.jsonc
+          if ! grep -q "\"bucket_name\": \"$BUCKET_NAME\"" wrangler.development.jsonc; then
+            echo "::error::wrangler.jsonc names no bucket \"ember\" for development to replace"
+            exit 1
+          fi
+          node apps/worker/scripts/deploy.ts --name "$WORKER_NAME" --config wrangler.development.jsonc --var "GIT_REVISION:${SHA::7}"
+          url=$(jq -rn 'first(inputs | select(.type == "deploy") | .targets[]? | select(endswith(".workers.dev")))' "$WRANGLER_OUTPUT_FILE_PATH")
+          if [ -z "$url" ]; then
+            echo "::error::wrangler deployed $WORKER_NAME without a workers.dev URL"
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the deploy
+        env:
+          DEPLOY_URL: ${{ steps.deploy.outputs.url }}
+        run: node apps/worker/scripts/check-deploy.ts "$DEPLOY_URL"
+      - name: Report
+        env:
+          BRANCH: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.workflow_run.head_branch }}
+          SHA: ${{ steps.ref.outputs.sha }}
+        run: echo "::notice::Development now runs $BRANCH ($SHA)"
