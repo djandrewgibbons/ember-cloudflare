@@ -1,6 +1,6 @@
 name: Deploy Production
 
-# Deploys main to the Worker ember-production, which serves irc.dxnd.ai, after the Verify gate, as
+# Deploys the irc.dxnd.ai branch, this copy's default, to the Worker ember-production, which serves irc.dxnd.ai, after the Verify gate, as
 # Platform's Deploy API Production does. Merging Update Ember's pull requests deploys Ember's releases.
 # Needs the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets in the production environment or
 # the repository. The first deploy takes its setup token from an EMBER_SETUP_TOKEN secret
@@ -8,7 +8,7 @@ name: Deploy Production
 # RESEND_API_KEY, TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY secrets go up too when set.
 on:
   push:
-    branches: [main]
+    branches: [irc.dxnd.ai]
   workflow_dispatch:
 
 concurrency:
@@ -38,10 +38,10 @@ jobs:
       WORKER_NAME: ember-production
       WRANGLER_SEND_METRICS: "false"
     steps:
-      - name: Require main
-        if: github.ref != 'refs/heads/main'
+      - name: Require irc.dxnd.ai
+        if: github.ref != 'refs/heads/irc.dxnd.ai'
         run: |
-          echo "::error::Production deploys only from main, not ${GITHUB_REF}"
+          echo "::error::Production deploys only from irc.dxnd.ai, not ${GITHUB_REF}"
           exit 1
       # Pinned to commits, as Ember's own deploy workflows are, because this job holds the Cloudflare token.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -66,7 +66,7 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.json
         run: |
-          node apps/worker/scripts/deploy.ts --name "$WORKER_NAME" --var "GIT_REVISION:${GITHUB_SHA::7}"
+          node apps/worker/scripts/deploy.ts --name "$WORKER_NAME" --var "GIT_REVISION:${GITHUB_SHA::7}" --var "GIT_BRANCH:${GITHUB_REF_NAME}"
           url=$(jq -rn 'first(inputs | select(.type == "deploy") | .targets[]? | select(endswith(".workers.dev")))' "$WRANGLER_OUTPUT_FILE_PATH")
           if [ -z "$url" ]; then
             echo "::error::wrangler deployed $WORKER_NAME without a workers.dev URL"
