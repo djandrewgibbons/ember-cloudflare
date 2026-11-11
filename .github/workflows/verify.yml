@@ -1,0 +1,64 @@
+# Deploy gate: passes when this exact tree already passed Checks, otherwise runs them.
+name: Verify
+
+on:
+  workflow_call:
+
+jobs:
+  lookup:
+    name: Find Verified Tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      verified: ${{ steps.find.outputs.verified }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Look up a passing Checks run for this tree
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TREE=$(git rev-parse 'HEAD^{tree}')
+          # Fork PR runs can upload artifacts too; only trust runs whose code came from this repository.
+          COUNT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=verified-tree-${TREE}" \
+            --jq '[.artifacts[] | select((.expired | not) and .workflow_run.head_repository_id == .workflow_run.repository_id)] | length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::notice::Tree ${TREE} already passed Checks; not re-running them"
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Tree ${TREE} has no passing Checks run; running them now"
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    name: Checks
+    needs: lookup
+    if: needs.lookup.outputs.verified != 'true'
+    uses: ./.github/workflows/checks.yml
+
+  # The tree marker can't vouch for the pushed history, so a cached tree still scans it.
+  secret-scan:
+    name: Secret Scan
+    needs: lookup
+    if: needs.lookup.outputs.verified == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@4dd8831c5f12599465d4d45c3c447b4018a34c85 # v3.97.9
+        with:
+          path: ./
+          extra_args: --only-verified
