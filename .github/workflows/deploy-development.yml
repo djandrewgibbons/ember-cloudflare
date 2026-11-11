@@ -1,6 +1,6 @@
 name: Deploy Development
 
-# Development runs the latest PR whose checks passed (two open PRs: last one wins), or a manually
+# Development exists only for pull requests: it runs the latest PR whose checks passed (two open PRs: last one wins), or a manually
 # dispatched branch, as Platform's does: the Worker ember-development with the R2 bucket
 # ember-development, apart from production's people, messages and files. workflow_run always runs
 # this file as it is on main, so changes here take effect once merged. Create the bucket first
@@ -39,9 +39,6 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name == github.repository))
-    environment:
-      name: development
-      url: ${{ steps.deploy.outputs.url }}
     env:
       WORKER_NAME: ember-development
       BUCKET_NAME: ember-development
