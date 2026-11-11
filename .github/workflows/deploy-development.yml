@@ -3,7 +3,7 @@ name: Deploy Development
 # Development exists only for pull requests: it runs the latest PR whose checks passed (two open PRs: last one wins), or a manually
 # dispatched branch, as Platform's does: the Worker ember-development with the R2 bucket
 # ember-development, apart from production's people, messages and files. workflow_run always runs
-# this file as it is on main, so changes here take effect once merged. Create the bucket first
+# this file as it is on the default branch, irc.dxnd.ai, so changes here take effect once merged. Create the bucket first
 # (`pnpm exec wrangler r2 bucket create ember-development`) unless the token may make buckets. The
 # first deploy takes its setup token from an EMBER_DEV_SETUP_TOKEN secret (`openssl rand -hex 32`).
 on:
