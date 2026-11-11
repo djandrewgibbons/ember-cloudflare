@@ -15,9 +15,6 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 jobs:
   verify:
     name: Verify
@@ -29,6 +26,8 @@ jobs:
   deploy:
     name: Deploy to Production
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     needs: verify
     environment:
