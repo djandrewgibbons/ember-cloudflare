@@ -16,9 +16,6 @@ concurrency:
   group: deploy-development
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 jobs:
   # A PR run already passed PR Checks; a manual run is checked here.
   verify:
@@ -32,6 +29,8 @@ jobs:
   deploy:
     name: Deploy to Development
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 15
     needs: verify
     if: |
