@@ -3,7 +3,7 @@ import { CARDS_PROMPT } from "@ember/protocol/prompts";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { administratorSession, cookieHeader, editorField, expect, SAME_ORIGIN, signInAsAdministrator, test, useOwnAddress } from "../../fixtures";
 import { AI_GATEWAY_ACCOUNT } from "../../projects/workspace-settings";
-import { CARD_HEADER, CARD_LINK, CARD_QUESTION, CARDED, HELLO, startFakeGateway, XAI_PATH, type FakeGateway } from "./fake-gateway";
+import { ANTHROPIC_PATH, CARD_HEADER, CARD_LINK, CARD_QUESTION, CARDED, CHAT_COMPLETIONS_PATH, HELLO, startFakeGateway, type FakeGateway } from "./fake-gateway";
 
 // The AI assistant tab's Agents card, New agent and an agent's page, with Try it, an agent answering a
 // mention, and its badge and profile, on the second test server, through the AI Gateway this spec fakes.
@@ -11,7 +11,7 @@ import { CARD_HEADER, CARD_LINK, CARD_QUESTION, CARDED, HELLO, startFakeGateway,
 // agents, and Ember AI off.
 
 const SONNET = "anthropic/claude-sonnet-5.5";
-/** xAI's Grok, which Ember asks through AI Gateway's xAI endpoint, where it can search the web. */
+/** xAI's Grok, which Ember asks through Cloudflare's REST API, and through AI Gateway's xAI endpoint to search the web. */
 const GROK = "xai/grok-4.7";
 
 let gateway: FakeGateway;
@@ -37,13 +37,13 @@ test.afterEach(async ({ request }) => {
 /** The administrator's session's headers, for the API. */
 const asAdministrator = async (request: APIRequestContext) => ({ Cookie: cookieHeader(await administratorSession(request)), ...SAME_ORIGIN });
 
-/** Makes the agent called `name` through the API, as New agent would, on Claude Sonnet 5.5, or as `on` says, off the web, in every open room. */
-async function makeAgent(request: APIRequestContext, name: string, on = { model: SONNET, modelName: "Claude Sonnet 5.5" }) {
+/** Makes the agent called `name` through the API, as New agent would, on Claude Sonnet 5.5, or `model`, off the web, in every open room. */
+async function makeAgent(request: APIRequestContext, name: string, model = SONNET) {
   const agent: NewAgent = {
     name,
     description: "Sums up threads into decisions and to-dos.",
     instructions: "Sum up the conversation so far as decisions and to-dos.",
-    ...on,
+    model,
     thinking: "low",
     length: "medium",
     webSearch: false,
@@ -91,7 +91,7 @@ test.describe("Agents", () => {
     await expect(tryIt).toContainText(HELLO);
     await expect(tryIt).toContainText(/Answered in [\d.]+ seconds\./);
     const tried = gateway.asked.at(-1)!;
-    expect(tried).toMatchObject({ path: `/accounts/${AI_GATEWAY_ACCOUNT.accountId}/ai/v1/messages`, body: { model: SONNET } });
+    expect(tried).toMatchObject({ path: ANTHROPIC_PATH, body: { model: "claude-sonnet-5-5" } });
     expect(tried.body.system).toMatch(/^You are Recap, an AI agent in the team chat "[^"]+"\. [^\n]+\n\nSum up the conversation so far as decisions and to-dos\.\n\nWrite in Markdown\.[\s\S]+\n\nYou're asked in a direct message\./);
 
     // Making it asks its model a test question, then goes back to the tab, which lists it.
@@ -143,7 +143,7 @@ test.describe("Agents", () => {
     searching();
     await expect(rowOf(card, "Scout")).toContainText("Looks up what's new on the web.Claude Sonnet 5.5 · Searches the web · general");
     expect(gateway.asked.at(-1)).toMatchObject({
-      path: `/accounts/${AI_GATEWAY_ACCOUNT.accountId}/ai/v1/messages`,
+      path: ANTHROPIC_PATH,
       body: { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }, { type: "web_fetch_20250910", name: "web_fetch", max_uses: 3 }] },
     });
 
@@ -163,23 +163,31 @@ test.describe("Agents", () => {
     expect(gone!.status()).toBe(404);
   });
 
-  test("an agent on Grok searches the web through AI Gateway's xAI endpoint, once the administrator turns Search the web on", async ({ page, request }) => {
-    await makeAgent(request, "Scout", { model: GROK, modelName: "Grok 4.7" });
-    // Its test question went to xAI's own Responses there, with the API token in AI Gateway's own header alone.
-    const throughXai = { path: XAI_PATH, authorization: undefined, aigAuthorization: `Bearer ${AI_GATEWAY_ACCOUNT.apiToken}` };
-    expect(gateway.asked.at(-1)).toMatchObject({ ...throughXai, body: { model: "grok-4.7", store: false } });
+  test("an agent on Grok searches the web with Ember's own tool, once the administrator turns Search the web on", async ({ page, request }) => {
+    await makeAgent(request, "Scout", GROK);
+    // Its test question went to Cloudflare's REST API, in Chat Completions, as AI Gateway's credits pay for Grok there.
+    const throughRest = { path: CHAT_COMPLETIONS_PATH, authorization: `Bearer ${AI_GATEWAY_ACCOUNT.apiToken}` };
+    expect(gateway.asked.at(-1)).toMatchObject({ ...throughRest, body: { model: GROK } });
     const card = await openAgents(page);
     await card.getByRole("link", { name: "Edit Scout" }).click();
 
     const webSearch = page.getByRole("switch", { name: "Search the web" });
     await webSearch.click();
-    // xAI's web search is the only tool for the web it's given, so it doesn't read pages of its own.
+    // Ember's own tool only searches, so it doesn't read pages of its own.
     await expect(webSearch).toHaveAccessibleDescription(
       "Scout searches the web when a question needs it, at most 5 times an answer, and lists the pages it used under its answer. AI Gateway's credits pay for each search.",
     );
     await page.getByRole("button", { name: "Save changes" }).click();
     await expect(rowOf(card, "Scout")).toContainText("Grok 4.7 · Searches the web");
-    expect(gateway.asked.at(-1)).toMatchObject({ ...throughXai, body: { model: "grok-4.7", tools: [{ type: "web_search" }], max_turns: 5, parallel_tool_calls: false, store: false } });
+    // It's still asked there, given Ember's tool, which Ember runs with Cloudflare's Web Search API through the same gateway.
+    const searched = gateway.asked.filter(({ body }) => "tools" in body).at(-1);
+    expect(searched).toMatchObject({ ...throughRest, body: { model: GROK, tools: [{ type: "function", function: { name: "web_search" } }] } });
+    expect(gateway.asked.findLast(({ path }) => path === `/accounts/${AI_GATEWAY_ACCOUNT.accountId}/ai/websearch/`)).toMatchObject({
+      ...throughRest,
+      path: `/accounts/${AI_GATEWAY_ACCOUNT.accountId}/ai/websearch/`,
+      body: { options: { gateway: { id: "default" } } },
+    });
+    expect(gateway.asked.some(({ path }) => path.includes("/grok/"))).toBe(false);
   });
 
   test("the administrator modifies what Ember adds around an agent's instructions, with caution, which Ember keeps until Use Ember's own puts its own back", async ({ page, request }) => {
