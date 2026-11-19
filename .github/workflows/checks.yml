@@ -9,7 +9,8 @@ jobs:
   check:
     name: Typecheck, Test, Build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # A run took 17 minutes after the rebase onto Ember's main of November 18.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -25,7 +26,9 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Ember's own E2E job has no limit. Its 1,369 tests took 29.4 minutes on two workers after the
+    # rebase onto Ember's main of November 18, so a 30-minute limit cancelled a passing run.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
