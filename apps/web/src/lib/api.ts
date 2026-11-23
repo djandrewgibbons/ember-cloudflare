@@ -53,6 +53,7 @@ import {
   type MemberfulConnection,
   type MemberfulConnectionStart,
   type MemberfulDisconnection,
+  type MembersChange,
   type NewAssistantModel,
   type OfferedModels,
   type NewDirect,
@@ -61,6 +62,9 @@ import {
   type NewRoomForm,
   type NewBot,
   type NewWorkspace,
+  type NotificationsPause,
+  type NotificationsPaused,
+  type NotifiedCounts,
   type OpenSignUp,
   type PastHuddle,
   type PastHuddles,
@@ -80,14 +84,18 @@ import {
   type Room,
   type RoomChanges,
   type RoomId,
+  type RoomLayout,
   type RoomSettings,
   type RoomSocketParams,
   type SavedPushSubscription,
+  type SavedRoomLayout,
   type Search,
   type SearchResults,
   type SearchSort,
   type SendingDomainCheck,
   type SentTestEmail,
+  type Section,
+  type SectionId,
   type SharedRoom,
   type Sidebar,
   type SignOut,
@@ -946,6 +954,14 @@ export async function changeHuddleSounds(changes: HuddleSoundChanges): Promise<H
 }
 
 /**
+ * Pauses this person's notifications until `until`, an ISO time, or resumes them with null, wherever
+ * they're signed in, answering them as the people directory lists them then.
+ */
+export async function pauseNotifications(until: string | null): Promise<DirectoryUser> {
+  return (await request<NotificationsPaused>("/api/users/me/notifications-pause", { method: "PUT", body: JSON.stringify({ until } satisfies NotificationsPause) })).user;
+}
+
+/**
  * Invites each of `emailAddresses`, no more than `INVITATIONS_AT_ONCE`, by email, answering what came of
  * each, in order. Fails with a 422 ApiError for a list it doesn't take, and a 403 one for anyone but an
  * administrator.
@@ -1099,9 +1115,22 @@ export async function fetchRoomSettings(roomId: RoomId): Promise<RoomSettings> {
   return request<RoomSettings>(`/api/rooms/${encodeURIComponent(roomId)}/settings`);
 }
 
+/**
+ * How many people each special mention this person may use in a room would notify there, as their
+ * composer asks before sending one. Fails with a 404 ApiError for a room this person isn't in.
+ */
+export async function fetchNotified(roomId: RoomId): Promise<NotifiedCounts> {
+  return request<NotifiedCounts>(`/api/rooms/${encodeURIComponent(roomId)}/notified`);
+}
+
 /** Changes a room, answering it as it is then. */
 export async function changeRoom(roomId: RoomId, changes: RoomChanges): Promise<SharedRoom> {
   return (await request<{ room: SharedRoom }>(`/api/rooms/${encodeURIComponent(roomId)}`, { method: "PATCH", body: JSON.stringify(changes) })).room;
+}
+
+/** Puts people in a private room, and takes people out of it, leaving everyone else as they are, answering the room. */
+export async function changeMembers(roomId: RoomId, change: MembersChange): Promise<SharedRoom> {
+  return (await request<{ room: SharedRoom }>(`/api/rooms/${encodeURIComponent(roomId)}/members`, { method: "PATCH", body: JSON.stringify(change) })).room;
 }
 
 /**
@@ -1130,18 +1159,40 @@ export async function setFavoriteOrder(roomIds: RoomId[]): Promise<Favorites> {
 }
 
 /**
- * Puts the rooms in this administrator's sidebar in the shared order, in the order `roomIds` lists them,
- * answering the rooms they're in that it ranks, in its order. Fails with a 403 ApiError for anyone but
- * an administrator, and for a room outside their sidebar.
+ * Puts the rooms in this administrator's sidebar in the shared order, in the order `layout` lists them,
+ * and when it has sections, the sections in its order, each with the rooms it lists, the rest in none,
+ * answering the rooms they're in that the order ranks, in its order, and every section. Fails with a 403
+ * ApiError for anyone but an administrator, and for a room outside their sidebar.
  */
-export async function setSharedOrder(roomIds: RoomId[]): Promise<RoomId[]> {
-  return (await request<{ sharedOrder: RoomId[] }>("/api/account/room_order", { method: "PUT", body: JSON.stringify({ roomIds }) })).sharedOrder;
+export async function setSharedOrder(layout: RoomLayout): Promise<SavedRoomLayout> {
+  return request<SavedRoomLayout>("/api/account/room_order", { method: "PUT", body: JSON.stringify(layout) });
+}
+
+/**
+ * Makes a sidebar section named `name`, after the others, answering it. Fails with a 409 ApiError when
+ * a section has that name, whatever its case, and a 403 for anyone but an administrator.
+ */
+export async function createSection(name: string): Promise<Section> {
+  return (await request<{ section: Section }>("/api/account/sections", { method: "POST", body: JSON.stringify({ name }) })).section;
+}
+
+/** Renames sidebar section `id`, answering it. Fails with a 409 ApiError when another section has the name. */
+export async function renameSection(id: SectionId, name: string): Promise<Section> {
+  return (await request<{ section: Section }>(`/api/account/sections/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ name }) })).section;
+}
+
+/** Deletes sidebar section `id`, leaving its rooms in none. */
+export async function deleteSection(id: SectionId): Promise<void> {
+  await request(`/api/account/sections/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /** Deletes a room, with its messages. */
 export async function deleteRoom(roomId: RoomId): Promise<void> {
   await request(`/api/rooms/${encodeURIComponent(roomId)}`, { method: "DELETE" });
 }
+
+/** What's asked before `leaveRoom`, by Leave on a room's settings page, and by /leave. */
+export const CONFIRM_LEAVE = "Are you sure you want to leave this room? Only someone in it who can change it can add you back.";
 
 /** Takes this person out of a private room they can't change, as Leave on its settings page does. */
 export async function leaveRoom(roomId: RoomId): Promise<void> {
@@ -1176,10 +1227,15 @@ export async function clearSearches(): Promise<void> {
 }
 
 /**
- * Where a room's @ prompt asks for the people it offers: Lexxy adds what's typed after the @ as
- * `filter`, and the answer is its prompt items.
+ * Where a room's @ prompt asks for the people it offers, and with `specialMentions` the special mentions
+ * too, @here, @channel and, in an open room, @everyone, which only a room's own composer offers: Lexxy
+ * adds what's typed after the @ as `filter`, and the answer is its prompt items. Without a room, it
+ * offers everyone, and no special mentions.
  */
-export const mentionPromptSrc = (roomId: RoomId) => `/api/autocompletable/users?room_id=${encodeURIComponent(roomId)}`;
+export const mentionPromptSrc = (roomId: RoomId | null, specialMentions = false) =>
+  roomId === null
+    ? "/api/autocompletable/users"
+    : `/api/autocompletable/users?room_id=${encodeURIComponent(roomId)}${specialMentions ? "&special_mentions=1" : ""}`;
 
 /** The address of a socket at `path` on this page's host, over wss on https pages. */
 export function socketUrl(path: string): string {
